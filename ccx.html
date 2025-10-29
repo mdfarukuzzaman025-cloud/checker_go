@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Losers.txt → Full & Masked XLSX (Local)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;line-height:1.4;margin:18px;background:#0f172a;color:#e6eef8}
+    .card{background:#0b1220;border-radius:10px;padding:18px;box-shadow:0 6px 18px rgba(2,6,23,.6);max-width:900px;margin:12px auto}
+    h1{margin:0 0 8px;font-size:20px}
+    p.lead{color:#9fb1d4;margin-top:6px}
+    label.file{display:inline-block;padding:10px 14px;background:#0ea5a3;color:#021024;border-radius:8px;cursor:pointer;margin-right:12px}
+    input[type=file]{display:none}
+    button{background:#2563eb;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer}
+    button:disabled{opacity:.5}
+    pre{background:#071027;padding:12px;border-radius:8px;overflow:auto;color:#c6d9ff}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .muted{color:#9fb1d4;font-size:13px}
+    .status{margin-top:10px;padding:10px;border-radius:8px;background:linear-gradient(90deg,#031125,#08132a);color:#bfe0ff}
+    footer{font-size:13px;color:#9fb1d4;margin-top:12px}
+    .warn{background:#2b0b0b;color:#ffd6d6;padding:10px;border-radius:8px}
+  </style>
+  <!-- SheetJS (xlsx) from CDN (runs locally in the browser). -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div class="card">
+    <h1>Local CC Processor — Full & Masked XLSX</h1>
+    <p class="lead">Upload your <code>losers.txt</code> (local). This app <strong>does NOT</strong> upload data anywhere — processing happens in your browser.</p>
+
+    <div class="row">
+      <label class="file">
+        Choose file
+        <input id="fileInput" type="file" accept=".txt,.csv,text/plain" />
+      </label>
+
+      <button id="processBtn" disabled>Process & Prepare XLSX</button>
+      <button id="downloadBtn" disabled>Download Workbook (.xlsx)</button>
+      <button id="downloadSeparateBtn" disabled>Download Separate Files (.xlsx)</button>
+    </div>
+
+    <div class="status" id="status" style="display:none"></div>
+
+    <div style="margin-top:12px">
+      <div class="warn"><strong>Warning:</strong> Handle these files carefully. Do not upload originals to public sites. First share masked file with authorities; give full data only under official request.</div>
+    </div>
+
+    <h3 style="margin-top:14px">Preview (first 5 parsed records)</h3>
+    <pre id="preview">No file loaded.</pre>
+
+    <footer>
+      Built for local processing. Developed by Sintex Abir (adapted). Use responsibly — only for lawful reporting and investigation.
+    </footer>
+  </div>
+
+<script>
+/*
+  Client-side parser + masker.
+  Heuristics adapted from user's workflow.
+*/
+const fileInput = document.getElementById('fileInput');
+const processBtn = document.getElementById('processBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const downloadSeparateBtn = document.getElementById('downloadSeparateBtn');
+const statusEl = document.getElementById('status');
+const preview = document.getElementById('preview');
+
+let lastWorkbook = null;
+let lastFullRows = null;
+let lastMaskedRows = null;
+
+fileInput.addEventListener('change', () => {
+  processBtn.disabled = !fileInput.files.length;
+  preview.textContent = fileInput.files.length ? `Selected: ${fileInput.files[0].name}` : 'No file loaded.';
+  statusHide();
+});
+
+processBtn.addEventListener('click', async () => {
+  if (!fileInput.files.length) return;
+  statusShow('Reading file...');
+  const file = fileInput.files[0];
+  const txt = await file.text();
+  statusShow('Parsing blocks...');
+  const records = parseBlocks(txt);
+  statusShow(`Parsed ${records.length} record(s). Generating sheets...`);
+  if (records.length === 0) {
+    preview.textContent = 'No valid records parsed. Check file format.';
+    statusShow('No records found.', true);
+    return;
+  }
+
+  // Build arrays of arrays for sheet data (header + rows)
+  const headers = ["card_number","expiry","cvv","holder_name","address","city","state","zip","country","phone","email"];
+  const fullRows = [headers, ...records.map(r => headers.map(h => r[h] || ''))];
+  const maskedRows = [headers, ...records.map(r => headers.map(h => maskValue(h, r[h] || '')))];
+
+  // make workbook
+  const wb = XLSX.utils.book_new();
+  const wsFull = XLSX.utils.aoa_to_sheet(fullRows);
+  const wsMasked = XLSX.utils.aoa_to_sheet(maskedRows);
+  XLSX.utils.book_append_sheet(wb, wsFull, "Full");
+  XLSX.utils.book_append_sheet(wb, wsMasked, "Masked");
+
+  lastWorkbook = wb;
+  lastFullRows = fullRows;
+  lastMaskedRows = maskedRows;
+
+  // preview first 5
+  const previewRows = records.slice(0,5).map((r,i)=>`${i+1}. ${r.card_number||''} | ${r.expiry||''} | ${r.cvv||''} | ${r.holder_name||''} | ${r.city||''} | ${r.phone||''} | ${r.email||''}`);
+  preview.textContent = `Parsed ${records.length} records. First 5:\n\n` + previewRows.join('\n');
+
+  statusShow('Workbook ready. Click "Download Workbook" to save.', false);
+  downloadBtn.disabled = false;
+  downloadSeparateBtn.disabled = false;
+});
+
+downloadBtn.addEventListener('click', () => {
+  if (!lastWorkbook) return;
+  statusShow('Preparing .xlsx for download...');
+  XLSX.writeFile(lastWorkbook, 'evidence_full_and_masked.xlsx');
+  statusShow('Downloaded: evidence_full_and_masked.xlsx', false);
+});
+
+downloadSeparateBtn.addEventListener('click', () => {
+  if (!lastFullRows || !lastMaskedRows) return;
+  statusShow('Preparing separate files...');
+  const wb1 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb1, XLSX.utils.aoa_to_sheet(lastFullRows), 'Full');
+  XLSX.writeFile(wb1, 'evidence_full.xlsx');
+
+  const wb2 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(lastMaskedRows), 'Masked');
+  XLSX.writeFile(wb2, 'evidence_masked.xlsx');
+
+  statusShow('Downloaded two files: evidence_full.xlsx and evidence_masked.xlsx', false);
+});
+
+// Helpers
+
+function statusShow(msg, isError=false) {
+  statusEl.style.display = 'block';
+  statusEl.style.background = isError ? 'linear-gradient(90deg,#3b0b0b,#5b0b0b)' : 'linear-gradient(90deg,#031125,#08132a)';
+  statusEl.textContent = msg;
+}
+function statusHide() { statusEl.style.display = 'none'; }
+
+function parseBlocks(text) {
+  // split by blank lines (two or more newlines)
+  const blocks = text.split(/\r?\n\s*\r?\n+/).map(b=>b.trim()).filter(Boolean);
+  const records = [];
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    if (lines.length < 4) continue; // skip too short
+    // Clean header noise lines like lines starting with '#ERROR' or 'Message:' or 'URL:'
+    const cleaned = lines.filter(l => !l.toLowerCase().startsWith('message:') && !l.toLowerCase().startsWith('url:') && !l.startsWith('#error'));
+    // heuristics:
+    // 0: card_number, 1: expiry, 2: cvv, 3: name, 4..n-7 address, last6: city,state,zip,country,phone,email
+    const L = cleaned.length;
+    let card = cleaned[0] || '';
+    let expiry = cleaned[1] || '';
+    let cvv = cleaned[2] || '';
+    let name = cleaned[3] || '';
+    let city='', state='', zip='', country='', phone='', email='';
+    let address = '';
+    if (L >= 7) {
+      // try to map from the end
+      email = cleaned[L-1] || '';
+      phone = cleaned[L-2] || '';
+      country = cleaned[L-3] || '';
+      zip = cleaned[L-4] || '';
+      state = cleaned[L-5] || '';
+      city = cleaned[L-6] || '';
+      if (L-6 > 4) {
+        const addrLines = cleaned.slice(4, L-6);
+        address = addrLines.join(' / ');
+      } else {
+        address = '';
+      }
+    } else {
+      // fallback assign remaining to address
+      const rem = cleaned.slice(4);
+      address = rem.join(' / ');
+    }
+    records.push({
+      "card_number": card,
+      "expiry": expiry,
+      "cvv": cvv,
+      "holder_name": name,
+      "address": address,
+      "city": city,
+      "state": state,
+      "zip": zip,
+      "country": country,
+      "phone": phone,
+      "email": email
+    });
+  }
+  return records;
+}
+
+function maskValue(field, val) {
+  if (!val) return '';
+  if (field === 'card_number') {
+    const digits = (''+val).replace(/\D/g,'');
+    if (digits.length >= 4) {
+      const masked = 'X'.repeat(Math.max(0,digits.length-4)) + digits.slice(-4);
+      // group by 4
+      return masked.match(/.{1,4}/g).join(' ');
+    }
+    return 'X'.repeat(digits.length);
+  }
+  if (field === 'cvv') return '';
+  if (field === 'expiry') return val ? 'XX/XXXX' : '';
+  if (field === 'holder_name') {
+    const parts = (''+val).split(/\s+/).filter(Boolean);
+    const initials = parts.slice(0,2).map(p => p[0] ? p[0].toUpperCase()+'.' : '').join(' ');
+    return initials ? initials + ' (masked)' : '(masked)';
+  }
+  if (field === 'email') {
+    const s = (''+val);
+    if (!s.includes('@')) return 'masked@masked';
+    const [local, domain] = s.split('@');
+    if (local.length <= 2) return local[0] + 'X' + '@' + domain;
+    return local[0] + 'X'.repeat(Math.max(0, local.length-2)) + local.slice(-1) + '@' + domain;
+  }
+  if (field === 'phone') {
+    const digits = (''+val).replace(/\D/g,'');
+    if (digits.length <= 4) return 'X'.repeat(digits.length);
+    return 'X'.repeat(digits.length-4) + digits.slice(-4);
+  }
+  return val;
+}
+</script>
+</body>
+</html>
